@@ -1,0 +1,1017 @@
+[
+    {
+        "id": "6980299f.7dc0a8",
+        "type": "subflow",
+        "name": "人数变更",
+        "info": "# 说明\n\n每0.2秒检查一次 Global context 的 number 对象，当对象发生变化时向 outpu 发送变化的计数器对象。\n\n## 参数说明\n\n- **topic:** 计数器名字\n- **last_number:** 之前的值\n- **payload:** 当前值",
+        "category": "",
+        "in": [],
+        "out": [
+            {
+                "x": 638.0000286102295,
+                "y": 297.00000381469727,
+                "wires": [
+                    {
+                        "id": "134a156b.93e6bb",
+                        "port": 0
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "134a156b.93e6bb",
+        "type": "function",
+        "z": "6980299f.7dc0a8",
+        "name": "监控人数变量",
+        "func": "var number = global.get('number');\nvar last_number = context.get('last_number') || {};\nvar obj_arr = Object.keys(number);\nvar change =false;\nfor (let index = 0; index < obj_arr.length; index++) {\n    const obj_name = obj_arr[index];\n    if (number[obj_name] != last_number[obj_name] && obj_name != 'home_num'){\n        change = true;\n        msg = {\n            \"topic\":obj_name,\n            \"last_number\": last_number[obj_name],\n            \"payload\": number[obj_name]\n        }\n        node.send(msg)\n    }\n}\nif (change){\n    last_number = {};\n    Object.assign(last_number,number);\n    context.set('last_number',last_number);\n}\nreturn null;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 507.1667022705078,
+        "y": 296.66666984558105,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a1ff09c.9b529f8",
+        "type": "inject",
+        "z": "6980299f.7dc0a8",
+        "name": "每0.2秒",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "repeat": "0.2",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.1,
+        "x": 282.1667022705078,
+        "y": 294.0000276565552,
+        "wires": [
+            [
+                "134a156b.93e6bb"
+            ]
+        ]
+    },
+    {
+        "id": "be437049.66777",
+        "type": "tab",
+        "label": "人数监测-V2",
+        "disabled": false,
+        "info": "# **流程原理**\r\n\r\n目前设定一个门，两个传感器，分别叫 A、B 传感器。安装在门的两侧，这个需要装修加持，经我测试，两个传感器之间的间距尽量大于等于10CM，在这距离上会得到比较满意的效果。（这个距离或许后期可以修改固件代码，以固件中的时间为准来判断先后，我只是个新手·····强撸 Arduino····已经灰飞烟灭中·····）\r\n\r\n# **前置需求**\r\n\r\n- Node-RED 安装 **start-up-trigger** 作用是 nodered 启动时候可以\r\n- 建议修改 Node-RED 的 setting.js 文件中 contextStorage 的选项，将其修改为本地存储，防止重启后丢失人数。\r\n\r\n```json\r\n    contextStorage: {\r\n        default: {\r\n            module: \"localfilesystem\"\r\n        }\r\n    }\r\n```\r\n\r\n# **适用范围**\r\n\r\n本流程支持所有二元传感器，安装于区域边界处，人经过两个传感器产生时间差，利用时间差来判断人行动的方向，从而达到计数的目的。\r\n\r\n距离传感器可以通过设定阀值(threshold)来区分二元状态。距离低于阀值是ON，距离高于阀值是OFF。\r\n\r\n# **情况模拟**\r\n\r\n## **人从 A 区域走向 B区域，A B 传感器的触发顺序应该是这样的。**\r\n\r\n```\r\n# 第一种可能：\r\nSensor A：---ON---OFF---\r\nSensor B：------ON---OFF---\r\n\r\n# 第二种可能：\r\nSensor A：---ON---OFF------------\r\nSensor B：------------ON---OFF---\r\n```\r\n\r\n## **人从 A 区域走向 B 区域，再折返，最后走回 A 区域离开，A B 传感器的触发顺序应该是这样的。**\r\n\r\n```\r\n# 第一种可能：\r\nSensor A：---ON-----------OFF---\r\nSensor B：------ON---OFF--------\r\n\r\n# 第二种可能：\r\nSensor A：---ON-------OFF----ON-----OFF----\r\nSensor B：------------ON---OFF-------------\r\n```\r\n\r\n1. A传感器先 ON，触发流程，流程**《02-保留传感器时间》**，根据发送过来的 mqtt topic 来确定传感器名称，传感器方向（是外面的传感器，还是里面的传感器），同时也将当前发送过来的传感器 payload和触发时间存到全局 Flow 上下文中，方便后方循环流程调用。\r\n2. 来到**《03-流程控制》**，将 Flow 全局上下文中的 sensor.[传感器名字].flow_states.states 设置为 `true` 声明整个识别流程开始，当流程触发之后，同一组的传感器变化不会再向下触发，除非这组传感器的状态是 `false`。\r\n3. 来到**《04-人数确定流程》**，这个流程是一个循环流程，一直循环检查 flow 全局上下文中的传感器状态分为三个状态。\r\n   1. **Wait ON 状态**：该状态是指触发者ON之后，等待另外一个传感器也为ON，因为当两个传感器都ON之后，才算人越过区域边界，如果在wait ON 状态下 wait_on_timeout(4秒) 后，还没等来另外一个传感器 ON，那么代表可能传感器误触，或者是人在门口路过。\r\n   2. **Wait OFF 状态**：该状态是指两个传感器都曾经ON过，注意是曾经，而不是同时ON，因为有可能两个传感器安装的距离相对远，触发的传感器OFF后，另一个传感器还没来得及ON，我叫这个叫 **ALL ON 状态**，确保 ALL ON 状态存在，才能判断人的方向。而 **Wait OFF状态** 就是为了防止人一直站在门口，只有在传感器都OFF的情况下（**ALL OFF 状态**），才进行方向判断。\r\n4. 当满足 **ALL ON 状态** 和 **ALL OFF 状态** 之后，再根据最后一次的 OFF 时间来判断，谁最晚OFF，代表人从哪个方向离开。\r\n\r\n## **使用方法**\r\n\r\n### **1. Mqtt Topic 格式规范**\r\n\r\n这里规定所有的mqtt格式必须为：类别/传感器名字最好用地理表示/传感器方向\r\n\r\n例如：\r\n|类别|传感器名称|传感器方向|\r\n|:---:|:---:|:---:|\r\n|VL53L0X|sufang_vl53l0x|sensor2|\r\n|VL53L0X|sufang_vl53l0x|sensor1|\r\n\r\n### **2. 全局变量 sensor_list 编写说明**\r\n\r\n传感器名字必须为mqtt的第二个横杠名字一样，例如 VL53LX/dating_vl53l0x/sensor1\r\n\r\n\r\n- **sensor_name:** 传感器名称\r\n  - **in:** 进入区域对象\r\n    - **direction_sensor：** 进入方向传感器（例如:\"POWER1\"）\r\n    - **ppl_name：** 进入区域后增加人数的计数器变量名（例如:\"dating_zone_ppl_num\"）\r\n  - **out：** 离开区域对象\r\n    - **direction_sensor：** 出口方向传感器（例如:\"POWER2\"）\r\n    - **ppl_name：** 进入区域后减少人数的计数器变量名（例如:\"fanting_zone_ppl_num\"）\r\n  - **threshold：**阀值 (参考配置：2000)，此选项根据自己的安装高度决定大小，距离低于阀值是ON，距离高于阀值是OFF。\r\n\r\n```javascript\r\nconst sensor_list = {\r\n    // 传感器名字必须为mqtt的第二个横杠名字一样，例如 VL53LX/dating_duishe/POWER1\r\n    \"dating_duishe\":{\r\n        \"in\":{\r\n            \"direction_sensor\":\"POWER1\",\r\n            \"ppl_name\":\"dating_zone_ppl_num\"\r\n        },\r\n        \"out\":{\r\n            \"direction_sensor\":\"POWER2\",\r\n            \"ppl_name\":\"fanting_zone_ppl_num\"\r\n        }\r\n    },\r\n    \"dating_vl53l0x\":{\r\n        \"in\":{\r\n            \"direction_sensor\":\"sensor2\",\r\n            \"ppl_name\":\"dating_zone_ppl_num\"\r\n        },\r\n        \"out\":{\r\n            \"direction_sensor\":\"sensor1\",\r\n            \"ppl_name\":\"fanting_zone_ppl_num\"\r\n        },\r\n        \"threshold\":2000 // 设置区分 ON 还是 OFF 的阀值,VL53L0X特有\r\n    },\r\n    \"sufang_vl53l0x\":{\r\n        \"in\":{\r\n            \"direction_sensor\":\"sensor2\",\r\n            \"ppl_name\":\"book_zone_ppl_num\"\r\n        },\r\n        \"out\":{\r\n            \"direction_sensor\":\"sensor1\",\r\n            \"ppl_name\":\"fanting_zone_ppl_num\"\r\n        },\r\n        \"threshold\":2000    // 设置区分 ON 还是 OFF 的阀值,VL53L0X特有\r\n    }\r\n}\r\n```\r\n### **3. 其他参数设置**\r\n\r\n**日志参数(log_setting)**\r\n- **level：**\r\n  - **debug：**输出所有日志。\r\n  - **info**：输出系统运行信息如当前人数，none：不输出日志。\r\n- **log_dir：**设置日志在nodered中的输出路径，如果是hassio，请设置 /config 作为路径开头以方便持久化\r\n- **log_file_out_pin：** 设置 file_out 节点在本节点的哪一个输出口\r\n\r\n```javascript\r\nconst log_setting = {\r\n    \"level\":\"debug\",\r\n    \"log_dir\":\"/config/rensu_log/\",\r\n    \"log_file_out_pin\":2\r\n}\r\n```\r\n\r\n### **子流程《人数变更》**\r\n\r\n#### 说明\r\n\r\n每0.2秒检查一次 Global context 的 number 对象，当对象发生变化时向 outpu 发送变化的计数器对象。\r\n\r\n#### 参数说明\r\n\r\n- **topic:** 计数器名字\r\n- **last_number:** 之前的值\r\n- **payload:** 当前值"
+    },
+    {
+        "id": "1a219300.79fe1d",
+        "type": "inject",
+        "z": "be437049.66777",
+        "name": "模拟大厅传感器-1-ON",
+        "topic": "state/dating_duishe/POWER1",
+        "payload": "ON",
+        "payloadType": "str",
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "x": 137.00000762939453,
+        "y": 244.00002717971802,
+        "wires": [
+            [
+                "28658791.daeb88"
+            ]
+        ]
+    },
+    {
+        "id": "c6b74306.7ac9d",
+        "type": "inject",
+        "z": "be437049.66777",
+        "name": "模拟大厅传感器-1-OFF",
+        "topic": "state/dating_duishe/POWER1",
+        "payload": "OFF",
+        "payloadType": "str",
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "x": 137.83331298828125,
+        "y": 286.0000696182251,
+        "wires": [
+            [
+                "28658791.daeb88"
+            ]
+        ]
+    },
+    {
+        "id": "e232787d.675d78",
+        "type": "inject",
+        "z": "be437049.66777",
+        "name": "模拟大厅传感器-2-ON",
+        "topic": "state/dating_duishe/POWER2",
+        "payload": "ON",
+        "payloadType": "str",
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "x": 139.83331298828125,
+        "y": 324.0000705718994,
+        "wires": [
+            [
+                "28658791.daeb88"
+            ]
+        ]
+    },
+    {
+        "id": "ba60e13e.112f9",
+        "type": "inject",
+        "z": "be437049.66777",
+        "name": "模拟大厅传感器-2-OFF",
+        "topic": "state/dating_duishe/POWER2",
+        "payload": "OFF",
+        "payloadType": "str",
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "x": 137.6666259765625,
+        "y": 366.00011348724365,
+        "wires": [
+            [
+                "28658791.daeb88"
+            ]
+        ]
+    },
+    {
+        "id": "2db4cdc6.b8edc2",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "初始化全局变量",
+        "func": "/* ------------------------------------------------------------------------------------------------------\n/* 本 function 定义全局变量\n/* sensor_list :定义传感器进出对应的人数变量\n/*              该人数变量名字 = flow 人数变量\n/* number : 对象存储各个区域人数\n/*          home_num 对象存储总人数(后期总人数可以通过门口传感器确定)，初始化时候由 init_num 定义。\n/* log_setting ：设置\n/* ------------------------------------------------------------------------------------------------------ */\n\n// Mqtt Topic 格式规范\n/* ---------------------------------------------------\n/* 这里规定所有的mqtt格式必须为：类别/传感器名字最好用地理表示/传感器方向\n/* 例如：   VL53L0X /   sufang_vl53l0x  /   sensor2\n/*          类别    /   书房传感器      /    传感器方向\n/* ---------------------------------------------------*/\n\n/* ------------------------------------------------------------------\n/*\n/* ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓ 只需要修改以下区域 ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓\n/*\n/* ------------------------------------------------------------------ */\n\n// 全局初始人数（可以设0 或者其他数字）\nconst init_num = 4;\n\n/* ------------------------------------------------------------------------------------------------------\n/* 传感器对应列表 例子：\n/* \"sensor_list\":{\n        \"传感器名称(sensor_name)\":{\n            \"进入区域(in)\":{\n                \"进入方向传感器(direction_sensor)\":\"POWER1\",\n                \"进入区域后增加人数的计数器变量名(ppl_name)\":\"dating_zone_ppl_num\"\n            },\n            \"离开区域(out)\":{\n                \"出口方向传感器(direction_sensor)\":\"POWER2\",\n                \"进入区域后减少人数的计数器变量名(ppl_name)\":\"fanting_zone_ppl_num\"\n            }\n        }\n/* ------------------------------------------------------------------------------------------------------ */\nconst sensor_list = {\n    // 传感器名字必须为mqtt的第二个横杠名字一样，例如 VL53LX/dating_vl53l0x/sensor1\n    \"dating_duishe\":{\n        \"in\":{\n            \"direction_sensor\":\"POWER1\",\n            \"ppl_name\":\"dating_zone_ppl_num\"\n        },\n        \"out\":{\n            \"direction_sensor\":\"POWER2\",\n            \"ppl_name\":\"fanting_zone_ppl_num\"\n        }\n    },\n    \"dating_vl53l0x\":{\n        \"in\":{\n            \"direction_sensor\":\"sensor2\",\n            \"ppl_name\":\"dating_zone_ppl_num\"\n        },\n        \"out\":{\n            \"direction_sensor\":\"sensor1\",\n            \"ppl_name\":\"fanting_zone_ppl_num\"\n        },\n        \"threshold\":2000\n    },\n    \"sufang_vl53l0x\":{\n        \"in\":{\n            \"direction_sensor\":\"sensor2\",\n            \"ppl_name\":\"book_zone_ppl_num\"\n        },\n        \"out\":{\n            \"direction_sensor\":\"sensor1\",\n            \"ppl_name\":\"fanting_zone_ppl_num\"\n        },\n        \"threshold\":2000    // 设置区分 ON 还是 OFF 的阀值,VL53L0X特有\n    }\n}\n\n/* ------------------------------------------------------------------------------------------------------\n/* 日志参数(log_setting)\n/* - level：debug：输出所有日志，info：输出系统运行信息如当前人数，none：不输出日志。\n/* - log_dir：设置日志在nodered中的输出路径，如果是hassio，请设置 /config 作为路径开头以方便持久化\n/* - log_file_out_pin： 设置 file_out 节点在本节点的哪一个输出口\n/* ------------------------------------------------------------------------------------------------------ */\nconst log_setting = {\n    \"level\":\"debug\",\n    \"log_dir\":\"/config/rensu_log/\",\n    \"log_file_out_pin\":2\n}\n\n// 定义一个传感器 ON 后，等待另一个传感器 ON 的超时时间。\nconst wait_on_timeout = 4000; // unit (ms)\n\n/* ------------------------------------------------------------------\n/*\n/* ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑ 只需要修改以上区域 ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑\n/*\n/* ------------------------------------------------------------------ */\n\n// 初始化 flow_function 对象，该对象存储一些 flow 的函数，方便调用控制和修改。\nvar flow_function = {};\n\n/* ------------------------------------------------------------------------------------------------------\n/* 声明输出日志文本的函数\n/* str_level : 输出日志等级，主要作用是控制日志输出\n/* str_log_msg : 日志内容，字符串类型。\n/* file_name : 日志输出文件名。\n/* int_logger_output_pin： 设定输出日志的 file.out 节点，例如当前 function 输出节点是2个，那么第2个节点必须连接 file.out 节点输出日志\n/* 调用例子 logger('debug','Flow starting','flow.log')\n/* ------------------------------------------------------------------------------------------------------ */\nflow_function.logger = function (str_level,str_log_msg,file_name){\n    let level_list = {\"none\":0,\"debug\":1,\"info\":2};\n    let level = level_list[str_level];\n    // 获取 flow 变量，检查是否输出日志\n    let log_level = level_list[flow.get('log_setting.level')];\n    if (log_level === 0 || log_level > level){\n        return;\n    }\n    // 日志输出\n    let time = new Date().toLocaleString();\n    let msg_text = time + ' [' + str_level + '] ' + str_log_msg;\n    let file_dir = flow.get('log_setting.log_dir');\n    // 检查目录路径最后是否有斜杠，如果没有补齐\n    if (file_dir[file_dir.length-1] != '/'){ file_dir = file_dir + '/'}\n    // 检查文件名后续名是否有写，如果没有写则补齐\n    if (file_name.indexOf('\\.log') < 0){file_name = file_name + '.log'}\n    let log_file_name = file_dir + file_name;\n    let msg = {\"payload\":msg_text,\"filename\":log_file_name};\n    let int_logger_output_pin = flow.get('log_setting.log_file_out_pin');\n    // 确定日志输出\n    let arr_output = [];\n    for (let i = 0;i < int_logger_output_pin;i++){\n        if (i != int_logger_output_pin - 1){\n            arr_output.push(null);\n        } else {\n            arr_output.push(msg);\n        }\n    }\n    node.send(arr_output);\n    msg.payload.filename = null;\n    node.send([null,null,msg]);\n    return;\n}\n\n\n/* ------------------------------------------------------------------------------------------------------\n/* 根据 sensor_list 的内容初始化 number 对象\n/* 调用方法 create_number_obj(sensor_list)\n/* 例子：\n\"number\":{\n    \"book_zone_ppl_num\":0,\n    \"fanting_zone_ppl_num\":4,\n    \"dating_zone_ppl_num\":0,\n    \"home_num\":4\n}\n------------------------------------------------------------------------------------------------------ */\nfunction create_number_obj(sensor_list){\n    // 从 global centext 获取number对象\n    var number = global.get('number') || {};\n    // 历遍整个 sensor_list 中传感器对应的人数变量来初始化 number 对象\n    for (let i in sensor_list){\n        // hasOwnProperty 方法可以判断key是否在对象中，以免破坏已存在数据\n        let in_ppl_name = sensor_list[i].in.ppl_name;\n        let out_ppl_name = sensor_list[i].out.ppl_name;\n        if (!number.hasOwnProperty(in_ppl_name)){\n            number[in_ppl_name] = 0;\n        }\n        if (!number.hasOwnProperty(out_ppl_name)){\n            number[out_ppl_name] = 0;\n        }\n    }\n    // 如果 home_num 不存在则创建它\n    if (!number.hasOwnProperty(\"home_num\")){\n        number.home_num = init_num;\n    }\n    return number;\n}\n\n\n/* ------------------------------------------------------------------------------------------------------\n/* 对象由 create_sensor_obj() 生成\n\"sensor\":{\n    \"sufang_vl53l0x\":{\n        \"flow_states\":{\n            \"states\":false,\n            \"start_direction\":null,\n            \"all_on\":false,\n            \"all_off\":false\n        },\n        \"sensor1\":{\n            \"topic\":\"VL53L0X/sufang_vl53l0x/sensor1\",\n            \"date\":1547276307774,\n            \"payload\":\"OFF\",\n            \"distance\":8190   // 该对象仅支持 VL53L0X 传感器固件\n        },\n        \"sensor2\":{\n            \"topic\":\"VL53L0X/sufang_vl53l0x/sensor2\",\n            \"date\":1547276307774,\n            \"payload\":\"OFF\",\n            \"distance\":8190   // 该对象仅支持 VL53L0X 传感器固件\n        }\n    },\n    \"dating_duishe\":{\n        \"flow_states\":{\n            \"states\":false,\n            \"start_direction\":null,\n            \"all_on\":false,\n            \"all_off\":false\n        },\n        \"POWER1\"{\n            \"topic\":\"state/bookroom_duishe/POWER1\",\n            \"date\":1547279414936,\n            \"payload\":\"OFF\",\n            \"distance\":'null'\n        },\n        \"POWER2\":{\n            \"topic\":\"state/bookroom_duishe/POWER2\",\n            \"date\":1547279415751,\n            \"payload\":\"OFF\",\n            \"distance\":'null'\n        }\n    }\n} \n// 根据 sensor_list 的内容初始化 sensor 对象\n// sensor 对象主要存储传感器分组当前的状态，其余流程通过此对象状态来控制整个人数判断流程\n------------------------------------------------------------------------------------------------------ */\nfunction create_sensor_obj(sensor_list){\n    // 从 flow centext 获取number对象\n    var sensor = flow.get('sensor') || {};\n        // 历遍整个 sensor_list 中传感器对应的人数变量来初始化 sensor 对象\n    for (let i in sensor_list){\n        let sensor_name = i;\n        if (!sensor.hasOwnProperty(sensor_name)){\n            sensor[sensor_name] = {\n                \"flow_states\":{\n                    \"states\":false,\n                    \"start_direction\":null,\n                    \"all_on\":false,\n                    \"all_off\":false\n                },\n                [sensor_list[sensor_name].in.direction_sensor]:{\n                    \"topic\":\"null\",\n                    \"date\":0,\n                    \"payload\":\"null\",\n                    \"distance\":'null'\n                },\n                [sensor_list[sensor_name].out.direction_sensor]:{\n                    \"topic\":\"null\",\n                    \"date\":0,\n                    \"payload\":\"null\",\n                    \"distance\":'null'\n                }\n            }\n        }\n    }\n    return sensor;\n}\n\nnumber = create_number_obj(sensor_list);\nsensor = create_sensor_obj(sensor_list);\n\n// 按钮触发重设变量\nif (msg.payload == 'reset'){\n    flow.set('sensor_list',sensor_list);\n    flow.set('flow_function',flow_function);\n    flow.set('sensor',sensor);\n    global.set('number',number);\n    flow.set('log_setting',log_setting);\n    flow.set('wait_on_timeout',wait_on_timeout)\n}\n// 当 nodered 启动的时候，检查flow 变量是否存在，不存在则初始化变量。\nelse if (msg.start == 'Started'){\n    if (typeof flow.get('sensor_list') == 'undefined'){flow.set('sensor_list',sensor_list)}\n    if (typeof flow.get('flow_function') == 'undefined'){flow.set('flow_function',flow_function)}\n    if (typeof flow.get('sensor') == 'undefined'){flow.set('sensor',sensor)}\n    if (typeof global.get('number') == 'undefined'){global.set('number',number)}\n    if (typeof flow.get('log_setting') == 'undefined'){flow.set('log_setting',log_setting)}\n    if (typeof flow.get('wait_on_timeout') == 'undefined'){flow.set('wait_on_timeout',wait_on_timeout)}\n}\n\nreturn msg;",
+        "outputs": 2,
+        "noerr": 0,
+        "x": 324.16669845581055,
+        "y": 60.33333778381348,
+        "wires": [
+            [],
+            [
+                "b5d09a67.2bed38",
+                "e72b043c.37a3f8"
+            ]
+        ]
+    },
+    {
+        "id": "7f3d1dc9.3c2e64",
+        "type": "catch",
+        "z": "be437049.66777",
+        "name": "",
+        "scope": null,
+        "x": 933.1666946411133,
+        "y": 99.66669082641602,
+        "wires": [
+            [
+                "1552e89a.525a27"
+            ]
+        ]
+    },
+    {
+        "id": "1552e89a.525a27",
+        "type": "debug",
+        "z": "be437049.66777",
+        "name": "",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "x": 1135.0000324249268,
+        "y": 101.0000228881836,
+        "wires": []
+    },
+    {
+        "id": "6af8a475.2d439c",
+        "type": "inject",
+        "z": "be437049.66777",
+        "name": "更改全局变量",
+        "topic": "",
+        "payload": "reset",
+        "payloadType": "str",
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "x": 111,
+        "y": 83.00000190734863,
+        "wires": [
+            [
+                "2db4cdc6.b8edc2"
+            ]
+        ]
+    },
+    {
+        "id": "6517d2a5.3f37ec",
+        "type": "start-up-trigger",
+        "z": "be437049.66777",
+        "x": 98.00004959106445,
+        "y": 38.00001335144043,
+        "wires": [
+            [
+                "2db4cdc6.b8edc2"
+            ]
+        ]
+    },
+    {
+        "id": "cf8da4f3.1055f8",
+        "type": "inject",
+        "z": "be437049.66777",
+        "name": "清空Flow变量",
+        "topic": "",
+        "payload": "reset",
+        "payloadType": "str",
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "x": 950.0000267028809,
+        "y": 44.00001621246338,
+        "wires": [
+            [
+                "d87a9b92.fee918"
+            ]
+        ]
+    },
+    {
+        "id": "d87a9b92.fee918",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "清空Flow变量",
+        "func": "flow.set('sensor_list');\nflow.set('flow_function');\nflow.set('sensor');\n// flow.set('number');\nflow.set('log_setting');\nflow.set('wait_on_timeout');\nglobal.set('last_number');\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 1153.1666984558105,
+        "y": 44.33335018157959,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "28658791.daeb88",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "保存触发时间",
+        "func": "/* ---------------------------------------------------\n/* 通过 topic 第二路径作为名字，保存传感器时间作为判断使用。\n/* 兼容二元传感器，例如人体传感器，只输出 ON和OFF，两组传感器产生时间差来判断方向\n/* ---------------------------------------------------*/\n\n// Mqtt Topic 格式规范\n/* ---------------------------------------------------\n/* 这里规定所有的mqtt格式必须为：类别/传感器名字最好用地理表示/传感器方向\n/* 例如：   VL53L0X /   sufang_vl53l0x  /   sensor2\n/*          类别    /   书房传感器      /    传感器方向\n/* ---------------------------------------------------*/\n\nvar sensor_list = flow.get('sensor_list');\n\n// 从 topic 中获取传感器位置信息\nvar arr_topic = msg.topic.split('/');\nvar device_type = arr_topic[0];\nvar position = arr_topic[1];\nvar direction = arr_topic[2];\nmsg.sensor = {\"position\":position,\"direction\":direction};\n\n// 保存当前消息时间\n// 如果固件传过来存在时间参数，则以固件时间为准\nif (typeof(msg.payload.time) == 'undefined'){\n    var now_time = new Date().getTime();\n}\nelse {\n    var now_time = msg.payload.time;\n}\n\n\n// 如果是 VL53L0X 传感器发来的消息\nif (device_type == 'VL53L0X'){\n    var threshold = sensor_list[position].threshold;\n    var dist = msg.payload.dist;\n    if (dist < threshold){\n        msg.payload = \"ON\";\n    }\n    else {\n        msg.payload = \"OFF\";\n    }\n}\n// 保存距离参数到 flow context 方便日志输出\nvar msg_distance = typeof(dist) == 'undefined' ? 'null' : dist;\nmsg[position] = {\"topic\":msg.topic,\"date\":now_time,\"payload\":msg.payload,\"distance\":msg_distance};\n\n// 检查传感器的值，当状态改变时才更新状态触发流\nvar sensor = flow.get(`sensor.${position}`);\nif (sensor[direction].payload != msg.payload){\n    flow.set(`sensor.${position}.${direction}`,msg[position]);\n    node.status({fill:\"green\",shape:\"dot\",text:msg.payload});\n    return msg;\n}\nelse {\n    return null;\n}",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 437.0000534057617,
+        "y": 306.0000295639038,
+        "wires": [
+            [
+                "c28f03c2.36e55"
+            ]
+        ]
+    },
+    {
+        "id": "c28f03c2.36e55",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "流程控制",
+        "func": "// ---\n// 检查该传感器组的流是否正在运行\n// ---\nvar position = msg.sensor.position;\nvar direction = msg.sensor.direction;\nvar flow_states_context_path = `sensor.${position}.flow_states`;\nvar flow_states = flow.get(flow_states_context_path);\n// 保存距离参数到 flow context 方便日志输出\nvar msg_distance = msg[position].distance;\n\n// 声明日志输出函数\nvar logger = flow.get('flow_function.logger');\n\nif (flow_states.states === false){\n    flow_states = {\"states\":true,\"start_direction\":direction,\"all_on\":false,\"all_off\":false};\n    flow.set(flow_states_context_path,flow_states);\n    logger('debug','----------------------------Flow Start-------------------------------',position);\n    logger('debug',`[${msg.topic}]:${msg.payload} [${msg_distance}]`,position);\n    // 定义等待另一个传感器 ON 的超时变量，这里设置是4秒\n    var now = new Date();\n    msg.exitTime = now.getTime() + flow.get('wait_on_timeout');\n    return msg;\n}\nelse {\n    //--\n    // 当流程进行时，如果当前触发方向不等于发起流程触发发向，并内容是ON\n    // 则认定另一个传感器状态是ON，也就是ALL_ON状态。（所有传感器在本次触发流程中都曾经ON过）\n    //--\n    var start_direction = flow_states.start_direction;\n    logger('debug',`[${msg.topic}]:${msg.payload} [${msg_distance}]`,position);\n    if (direction != start_direction && msg.payload == \"ON\" ){\n        flow_states.all_on = true;\n        flow.set(flow_states_context_path,flow_states);\n        // 调试用\n        msg.all_on = flow_states.all_on;\n    }\n    return null;\n}",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 618.1666870117188,
+        "y": 307.33336353302,
+        "wires": [
+            [
+                "3be0dd60.c1c512"
+            ]
+        ]
+    },
+    {
+        "id": "3be0dd60.c1c512",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "人数确定流程",
+        "func": "var in_sensor;\nvar out_sensor;\nvar flow_states;\nvar Results;\nvar position = msg.sensor.position;\nvar direction = msg.sensor.direction;\nvar flow_states_context_path = `sensor.${position}.flow_states`;\nvar sensor_list = flow.get(`sensor_list.${position}`);\nvar in_sensor_context_path = `sensor.${position}.${sensor_list.in.direction_sensor}`;\nvar out_sensor_context_path = `sensor.${position}.${sensor_list.out.direction_sensor}`;\nvar logger_function = flow.get('flow_function.logger');\n\n// 获取 flow 变量\nfunction Refresh() {\n    in_sensor = flow.get(in_sensor_context_path);\n    out_sensor = flow.get(out_sensor_context_path);\n    flow_states = flow.get(flow_states_context_path);\n    msg.in_sensor = in_sensor;\n    msg.out_sensor = out_sensor;\n}\n\n// logger\nfunction logger(str){\n    var log_file_name = position;\n    // 当日志内容一样的情况下则不再重复输出\n    if (str != msg.last_log_srt){\n        msg.last_log_srt = str;\n        logger_function('debug',str,log_file_name);\n    }\n}\n\n// 等待2个传感器都为 OFF\nfunction chack_all_off() {\n    Refresh();\n    // 如果两个方向的传感器都 OFF，返回 true，反之返回 false;\n    if (in_sensor.payload == \"OFF\" && out_sensor.payload == \"OFF\") {\n        flow_states.all_off = true;\n        flow.set(flow_states_context_path,flow_states);\n        // 调试使用\n        msg.all_sensor_off = true;\n        return true;\n    }\n    return false;\n}\n\n// 等待2个传感器都为 OFF 后，统计时间计算是IN/OUT。\nfunction check_in_or_out(){\n    msg.end_sensor_1_data = in_sensor.date;\n    msg.end_sensor_2_data = out_sensor.date;\n    if (in_sensor.date > out_sensor.date) {\n        // 如果最晚 OFF 的是触发者，则证明人出去了后又折返了，不作任何操作。\n        if (in_sensor.topic == msg.topic) {\n            return \"back\";\n        }\n        return \"in\";\n    }\n    else {\n        // 如果最晚 OFF 的是触发者，则证明人出去了后又折返了，不作任何操作\n        if (out_sensor.topic == msg.topic) {\n            return \"back\";\n        }\n        return \"out\";\n    }\n}\n\nfunction clean_flow_variable() {\n    flow_states = {\"states\":false,\"start_direction\":direction,\"all_on\":false,\"all_off\":false};\n    flow.set(flow_states_context_path,flow_states);\n}\n\n// -------------- main --------------\nRefresh();\nif (new Date().getTime() > msg.exitTime && flow_states.all_on === false && in_sensor.payload === \"OFF\" && out_sensor.payload === \"OFF\"){\n    logger(`[${msg.topic}] Time out. `);\n    logger('---------------------------------end---------------------------------');\n    clean_flow_variable();\n    node.status({fill:\"red\",shape:\"ring\",text:'Time out'});\n    return null;\n}\n\nif (flow_states.all_on === true){\n    // 如果另一个传感器 on 了，就检查是否所有传感器的 off了\n    if (chack_all_off()){\n        // 如果所有传感器都 OFF 后就根据传感器时间大小来判断人离开的方向\n        Results = check_in_or_out();\n        // 检测方向为折返，则重置 flow_states 对象，停止流\n        if (Results === 'back'){\n            logger(`[${msg.topic}] Direction is back. `);\n            logger('---------------------------------end---------------------------------');\n            clean_flow_variable();\n            node.status({fill:\"red\",shape:\"ring\",text:Results});\n            return null;\n        }\n        else {\n            msg.Results = Results;\n            logger(`[${msg.topic}] Direction is ${Results} `);\n            clean_flow_variable();\n            node.status({fill:\"green\",shape:\"dot\",text:Results});\n            return [msg,null];\n        }\n    }\n    else {\n        // 如果还有传感器没 OFF，那么就继续输出到循环出口，循环检测\n        logger(`[${msg.topic}] Wait off. `);\n        node.status({fill:\"yellow\",shape:\"dot\",text:'Wait off'});\n        return [null,msg];\n    }\n}\nelse {\n    // 如果另一个传感器没有on就发送到循环出口循环检测\n    logger(`[${msg.topic}] Wait on. `);\n    node.status({fill:\"yellow\",shape:\"dot\",text:'Wait on'});\n    return [null,msg];\n}",
+        "outputs": 2,
+        "noerr": 0,
+        "x": 813.0001831054688,
+        "y": 308.0000696182251,
+        "wires": [
+            [
+                "36394122.ef968e"
+            ],
+            [
+                "c5de3ce5.36ce2"
+            ]
+        ]
+    },
+    {
+        "id": "36394122.ef968e",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "变更人数",
+        "func": "var sensor_list = flow.get('sensor_list');\nvar position = msg.sensor.position;\nvar number = global.get('number');\nvar in_zone_name = sensor_list[position].in.ppl_name;\nvar out_zone_name = sensor_list[position].out.ppl_name;\nvar logger = flow.get('flow_function.logger');\n\nif (msg.Results === 'in'){\n    number[in_zone_name] ++;\n    if (number[out_zone_name] > 0){\n        number[out_zone_name] --\n    }\n}\nelse {\n    if (number[in_zone_name] > 0){\n        number[in_zone_name] --\n    }\n    number[out_zone_name] ++;\n}\nglobal.set('number',number);\nmsg.number = number;\nlogger('debug',`[${msg.topic}]:${JSON.stringify(number)}`,position);\nlogger('debug','---------------------------------end---------------------------------',position);\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 1019.1667785644531,
+        "y": 300.6667356491089,
+        "wires": [
+            [
+                "fa824b83.8b1ae8"
+            ]
+        ]
+    },
+    {
+        "id": "c5de3ce5.36ce2",
+        "type": "delay",
+        "z": "be437049.66777",
+        "name": "",
+        "pauseType": "delay",
+        "timeout": "50",
+        "timeoutUnits": "milliseconds",
+        "rate": "1",
+        "nbRateUnits": "1",
+        "rateUnits": "second",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": false,
+        "x": 1017.0001106262207,
+        "y": 351.00003147125244,
+        "wires": [
+            [
+                "61cb1180.99255"
+            ]
+        ]
+    },
+    {
+        "id": "23e4b8fd.2144d8",
+        "type": "link in",
+        "z": "be437049.66777",
+        "name": "循环监测传感器状态in",
+        "links": [
+            "61cb1180.99255"
+        ],
+        "x": 634.1666870117188,
+        "y": 348.00003147125244,
+        "wires": [
+            [
+                "3be0dd60.c1c512"
+            ]
+        ]
+    },
+    {
+        "id": "61cb1180.99255",
+        "type": "link out",
+        "z": "be437049.66777",
+        "name": "循环监测传感器状态out",
+        "links": [
+            "23e4b8fd.2144d8"
+        ],
+        "x": 1137.1667823791504,
+        "y": 383.00007152557373,
+        "wires": []
+    },
+    {
+        "id": "b5d09a67.2bed38",
+        "type": "file",
+        "z": "be437049.66777",
+        "name": "输出单个传感器日志",
+        "filename": "",
+        "appendNewline": true,
+        "createDir": true,
+        "overwriteFile": "false",
+        "x": 584.1666870117188,
+        "y": 51.000006437301636,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "de14c0de.1b1e4",
+        "type": "mqtt in",
+        "z": "be437049.66777",
+        "name": "书房距离-1",
+        "topic": "VL53L0X/sufang_vl53l0x/sensor1",
+        "qos": "2",
+        "broker": "78d6ce3c.d585c",
+        "x": 75,
+        "y": 424.0000333786011,
+        "wires": [
+            [
+                "4a262c81.b37df4"
+            ]
+        ]
+    },
+    {
+        "id": "af792374.34422",
+        "type": "mqtt in",
+        "z": "be437049.66777",
+        "name": "书房距离-2",
+        "topic": "VL53L0X/sufang_vl53l0x/sensor2",
+        "qos": "2",
+        "broker": "78d6ce3c.d585c",
+        "x": 75,
+        "y": 466.0001163482666,
+        "wires": [
+            [
+                "4a262c81.b37df4"
+            ]
+        ]
+    },
+    {
+        "id": "fa824b83.8b1ae8",
+        "type": "link out",
+        "z": "be437049.66777",
+        "name": "人数变更out",
+        "links": [
+            "398460a2.705cd"
+        ],
+        "x": 1144.166784286499,
+        "y": 301.0000877380371,
+        "wires": []
+    },
+    {
+        "id": "398460a2.705cd",
+        "type": "link in",
+        "z": "be437049.66777",
+        "name": "人数变更in",
+        "links": [
+            "fa824b83.8b1ae8"
+        ],
+        "x": 26.00002098083496,
+        "y": 703.3333530426025,
+        "wires": [
+            [
+                "73aa9361.e608fc"
+            ]
+        ]
+    },
+    {
+        "id": "73aa9361.e608fc",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "更新HA人数",
+        "func": "var sensor_list = flow.get('sensor_list');\nvar number = global.get('number')\nvar position = msg.sensor.position;\nvar sensor_item = sensor_list[position];\nmsg.payload = {};\nmsg.payload.data = {\"entity_id\":`input_number.${sensor_item.in.ppl_name}`,\"value\":number[sensor_item.in.ppl_name]};\nnode.send(msg);\nmsg.payload = {};\nmsg.payload.data = {\"entity_id\":`input_number.${sensor_item.out.ppl_name}`,\"value\":number[sensor_item.out.ppl_name]};\nnode.send(msg);",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 153.0000228881836,
+        "y": 703.3333530426025,
+        "wires": [
+            [
+                "def2df29.d920e"
+            ]
+        ]
+    },
+    {
+        "id": "def2df29.d920e",
+        "type": "api-call-service",
+        "z": "be437049.66777",
+        "name": "更新数值",
+        "server": "73841890.65ca18",
+        "service_domain": "input_number",
+        "service": "set_value",
+        "data": "",
+        "render_data": false,
+        "mergecontext": "",
+        "output_location": "payload",
+        "output_location_type": "msg",
+        "x": 335.00004959106445,
+        "y": 703.3333539962769,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "4a1865cf.36e5cc",
+        "type": "server-state-changed",
+        "z": "be437049.66777",
+        "name": "HA手动操作",
+        "server": "73841890.65ca18",
+        "entityidfilter": "input_number.*ppl_num",
+        "entityidfiltertype": "regex",
+        "outputinitially": false,
+        "state_type": "str",
+        "haltifstate": "",
+        "halt_if_type": "",
+        "halt_if_compare": "is",
+        "outputs": 1,
+        "x": 636.1666641235352,
+        "y": 697.6666889190674,
+        "wires": [
+            [
+                "ef3baaf7.b37938"
+            ]
+        ]
+    },
+    {
+        "id": "ef3baaf7.b37938",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "更新nodered人数变量",
+        "func": "var number = global.get('number');\nvar obj_name = msg.topic.replace(/input_number\\./,'');\nnumber[obj_name]=parseInt(msg.payload);\nglobal.set('number',number);\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 856.1666717529297,
+        "y": 697.3333587646484,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "4a262c81.b37df4",
+        "type": "json",
+        "z": "be437049.66777",
+        "name": "",
+        "property": "payload",
+        "action": "",
+        "pretty": false,
+        "x": 242.5000114440918,
+        "y": 488.0000419616699,
+        "wires": [
+            [
+                "28658791.daeb88"
+            ]
+        ]
+    },
+    {
+        "id": "19cf9428.a0e1ac",
+        "type": "mqtt in",
+        "z": "be437049.66777",
+        "name": "大厅距离-2",
+        "topic": "VL53L0X/dating_vl53l0x/sensor2",
+        "qos": "2",
+        "broker": "78d6ce3c.d585c",
+        "x": 78,
+        "y": 552.0000371932983,
+        "wires": [
+            [
+                "4a262c81.b37df4"
+            ]
+        ]
+    },
+    {
+        "id": "15e8ff74.5c0c01",
+        "type": "mqtt in",
+        "z": "be437049.66777",
+        "name": "大厅距离-1",
+        "topic": "VL53L0X/dating_vl53l0x/sensor1",
+        "qos": "2",
+        "broker": "78d6ce3c.d585c",
+        "x": 77.99999237060547,
+        "y": 508.0000352859497,
+        "wires": [
+            [
+                "4a262c81.b37df4"
+            ]
+        ]
+    },
+    {
+        "id": "e72b043c.37a3f8",
+        "type": "file",
+        "z": "be437049.66777",
+        "name": "输出全局日志",
+        "filename": "/config/rensu.log",
+        "appendNewline": true,
+        "createDir": true,
+        "overwriteFile": "false",
+        "x": 555.0000152587891,
+        "y": 96.00000286102295,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "8895b3d0.1c686",
+        "type": "subflow:6980299f.7dc0a8",
+        "z": "be437049.66777",
+        "name": "",
+        "x": 65,
+        "y": 872.000376701355,
+        "wires": [
+            [
+                "20738261.62446e"
+            ]
+        ]
+    },
+    {
+        "id": "632da9fc.ca71b8",
+        "type": "function",
+        "z": "be437049.66777",
+        "name": "人数控制灯",
+        "func": "var now_ppl_num = msg.payload;\nvar old_ppl_num = msg.last_number;\nvar topic = msg.topic;\nif (now_ppl_num === 1 && old_ppl_num === 0){\n    msg= {\"payload\":{\"service\":\"turn_on\"}};\n}\nelse if (now_ppl_num === 0){\n    msg= {\"payload\":{\"service\":\"turn_off\"}};\n}\nelse {\n    return null;\n}\nswitch (topic){\n    case \"book_zone_ppl_num\":\n    msg.payload.data = {\"entity_id\":\"light.book_room_008ca801\"};\n    node.status({fill:\"green\",shape:\"dot\",text:\"light.book_room_008ca801\"});\n    break;\n    case \"dating_zone_ppl_num\":\n    msg.payload.data = {\"entity_id\":\"light.dt_light_008c3a69_ch3\"};\n    node.status({fill:\"green\",shape:\"dot\",text:\"light.dt_light_008c3a69_ch3\"});\n    break;\n    case \"fanting_zone_ppl_num\":\n    msg.payload.data = {\"entity_id\":\"light.fanting\"};\n    node.status({fill:\"green\",shape:\"dot\",text:\"light.fanting\"});\n    break;\n}\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 459.0000534057617,
+        "y": 864.0004320144653,
+        "wires": [
+            [
+                "4f7a69a9.012f88"
+            ]
+        ]
+    },
+    {
+        "id": "4f7a69a9.012f88",
+        "type": "api-call-service",
+        "z": "be437049.66777",
+        "name": "控制区域灯",
+        "server": "73841890.65ca18",
+        "service_domain": "light",
+        "service": "",
+        "data": "",
+        "mergecontext": "",
+        "x": 667.0000152587891,
+        "y": 859.0003509521484,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "20738261.62446e",
+        "type": "time-range-switch",
+        "z": "be437049.66777",
+        "name": "日落",
+        "lat": "22.522390000000005",
+        "lon": "113.38168833333333",
+        "startTime": "sunset",
+        "endTime": "sunrise",
+        "startOffset": "",
+        "endOffset": "",
+        "x": 225.00000381469727,
+        "y": 871.0002765655518,
+        "wires": [
+            [
+                "632da9fc.ca71b8"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "8c861fb9.78dd9",
+        "type": "subflow:6980299f.7dc0a8",
+        "z": "be437049.66777",
+        "name": "",
+        "x": 67.9999771118164,
+        "y": 996.0003786087036,
+        "wires": [
+            [
+                "e4d4f52a.228e58"
+            ]
+        ]
+    },
+    {
+        "id": "efe5f4b6.9f9018",
+        "type": "switch",
+        "z": "be437049.66777",
+        "name": "判断以前状态",
+        "property": "last_number",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "1",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "0",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 2,
+        "x": 373.16665267944336,
+        "y": 997.6672048568726,
+        "wires": [
+            [
+                "b0944fa8.3e95f"
+            ],
+            [
+                "42d0d23b.ffbc9c"
+            ]
+        ]
+    },
+    {
+        "id": "b0944fa8.3e95f",
+        "type": "switch",
+        "z": "be437049.66777",
+        "name": "如果现在是0",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "0",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 1,
+        "x": 573.0000286102295,
+        "y": 968.0004568099976,
+        "wires": [
+            [
+                "3a19e164.c6403e"
+            ]
+        ]
+    },
+    {
+        "id": "42d0d23b.ffbc9c",
+        "type": "switch",
+        "z": "be437049.66777",
+        "name": "如果现在是1",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "1",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 1,
+        "x": 571.0000743865967,
+        "y": 1023.0004572868347,
+        "wires": [
+            [
+                "fb2d458f.c79338"
+            ]
+        ]
+    },
+    {
+        "id": "85e3c6ef.c860b8",
+        "type": "change",
+        "z": "be437049.66777",
+        "name": "书房灯",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.data",
+                "pt": "msg",
+                "to": "{\"entity_id\":\"light.book_room_008ca801\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1184.1668376922607,
+        "y": 1043.6672067642212,
+        "wires": [
+            [
+                "f9a5b07d.33e87"
+            ]
+        ]
+    },
+    {
+        "id": "f9a5b07d.33e87",
+        "type": "api-call-service",
+        "z": "be437049.66777",
+        "name": "操作灯",
+        "server": "73841890.65ca18",
+        "service_domain": "light",
+        "service": "",
+        "data": "",
+        "render_data": false,
+        "mergecontext": "",
+        "output_location": "payload",
+        "output_location_type": "msg",
+        "x": 1371.0002574920654,
+        "y": 1001.0004568099976,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "3a19e164.c6403e",
+        "type": "change",
+        "z": "be437049.66777",
+        "name": "设置关闭状态",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"service\":\"turn_off\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 767.9999980926514,
+        "y": 966.0004558563232,
+        "wires": [
+            [
+                "bef4f5ea.e31d98"
+            ]
+        ]
+    },
+    {
+        "id": "bef4f5ea.e31d98",
+        "type": "switch",
+        "z": "be437049.66777",
+        "name": "判断操作的灯",
+        "property": "topic",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "fanting_zone_ppl_num",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "dating_zone_ppl_num",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "book_zone_ppl_num",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 3,
+        "x": 976.9999980926514,
+        "y": 998.0004568099976,
+        "wires": [
+            [
+                "ad8a3af4.116fa8"
+            ],
+            [
+                "6aa1d9dd.2e7c38"
+            ],
+            [
+                "85e3c6ef.c860b8"
+            ]
+        ]
+    },
+    {
+        "id": "6aa1d9dd.2e7c38",
+        "type": "change",
+        "z": "be437049.66777",
+        "name": "客厅大灯",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.data",
+                "pt": "msg",
+                "to": "{\"entity_id\":\"light.dt_light_008c3a69_ch3\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1179.000005722046,
+        "y": 1001.0004568099976,
+        "wires": [
+            [
+                "f9a5b07d.33e87"
+            ]
+        ]
+    },
+    {
+        "id": "ad8a3af4.116fa8",
+        "type": "change",
+        "z": "be437049.66777",
+        "name": "饭厅灯",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload.data",
+                "pt": "msg",
+                "to": "{\"entity_id\":\"light.fanting\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 1182.000005722046,
+        "y": 957.0004549026489,
+        "wires": [
+            [
+                "f9a5b07d.33e87"
+            ]
+        ]
+    },
+    {
+        "id": "fb2d458f.c79338",
+        "type": "change",
+        "z": "be437049.66777",
+        "name": "设置打开状态",
+        "rules": [
+            {
+                "t": "set",
+                "p": "payload",
+                "pt": "msg",
+                "to": "{\"service\":\"turn_on\"}",
+                "tot": "json"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 768.9999980926514,
+        "y": 1022.3338346481323,
+        "wires": [
+            [
+                "bef4f5ea.e31d98"
+            ]
+        ]
+    },
+    {
+        "id": "e4d4f52a.228e58",
+        "type": "time-range-switch",
+        "z": "be437049.66777",
+        "name": "日落",
+        "lat": "22.522390000000005",
+        "lon": "113.38168833333333",
+        "startTime": "sunset",
+        "endTime": "sunrise",
+        "startOffset": "",
+        "endOffset": "",
+        "x": 211,
+        "y": 996.3337907791138,
+        "wires": [
+            [
+                "efe5f4b6.9f9018"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "b18b49dc.104718",
+        "type": "comment",
+        "z": "be437049.66777",
+        "name": "应用例子（两个例子功能一样）",
+        "info": "两个功能都是一样\n一个是function版本\n一个是不用function的版本",
+        "x": 145.16666412353516,
+        "y": 822.0002098083496,
+        "wires": []
+    },
+    {
+        "id": "7b32c791.da8da8",
+        "type": "comment",
+        "z": "be437049.66777",
+        "name": "更新HA滑动条（全自动无需修改）",
+        "info": "",
+        "x": 155,
+        "y": 644.0000190734863,
+        "wires": []
+    },
+    {
+        "id": "1b5169aa.fff3e6",
+        "type": "comment",
+        "z": "be437049.66777",
+        "name": "主程序-只需添加 mqtt 传感器",
+        "info": "",
+        "x": 135,
+        "y": 197.0000057220459,
+        "wires": []
+    },
+    {
+        "id": "78d6ce3c.d585c",
+        "type": "mqtt-broker",
+        "z": "",
+        "name": "hassio-mqtt",
+        "broker": "这里写MQTT服务器地址",
+        "port": "1883",
+        "clientid": "nodered-client",
+        "usetls": false,
+        "compatmode": true,
+        "keepalive": "60",
+        "cleansession": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": ""
+    },
+    {
+        "id": "73841890.65ca18",
+        "type": "server",
+        "z": "",
+        "name": "Home Assistant",
+        "legacy": false
+    }
+]

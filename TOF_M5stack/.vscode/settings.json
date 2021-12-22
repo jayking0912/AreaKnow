@@ -1,0 +1,10 @@
+{
+    "vsmqtt.brokerProfiles": [
+        {
+            "name": "jayHome",
+            "host": "10.0.0.142",
+            "port": 1883,
+            "clientId": "vsmqtt_client"
+        }
+    ]
+}
